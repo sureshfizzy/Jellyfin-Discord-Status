@@ -4,6 +4,8 @@ import asyncio
 import os
 import json
 import logging
+from datetime import datetime, timedelta
+from dateutil import parser, tz
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -39,7 +41,7 @@ def get_first_user_id():
         logger.error(f"Error getting users: {response.status_code} {response.text}")
         return None
 
-# Function to count media items (excluding episodes)
+# Function to count media items in a library
 def count_items_in_library(user_id, library_id):
     url = f"{BASE_URL}/Users/{user_id}/Items"
     params = {
@@ -56,6 +58,37 @@ def count_items_in_library(user_id, library_id):
         logger.error(f"Error counting items in library {library_id}: {response.status_code} {response.text}")
         return 0
 
+# Function to count media items added in the past 24 hours
+def count_recently_added_items(user_id, library_id):
+    url = f"{BASE_URL}/Users/{user_id}/Items"
+    now = datetime.utcnow().replace(tzinfo=tz.UTC)
+    twenty_four_hours_ago = now - timedelta(hours=24)
+    params = {
+        'Recursive': 'true',
+        'ParentId': library_id,
+        'IncludeItemTypes': 'Movie,Series',  # Only count movies and series
+        'Fields': 'Id,DateCreated',  # Need IDs and DateCreated to filter
+    }
+    response = requests.get(url, headers=headers, params=params)
+    if response.status_code == 200:
+        items = response.json().get('Items', [])
+        count = 0
+        for item in items:
+            date_created = item.get('DateCreated')
+            if date_created:
+                try:
+                    item_date = parser.isoparse(date_created)
+                    if item_date.tzinfo is None:
+                        item_date = item_date.replace(tzinfo=tz.UTC)
+                    if item_date >= twenty_four_hours_ago:
+                        count += 1
+                except ValueError as e:
+                    logger.error(f"Date parsing error for item with DateCreated '{date_created}': {e}")
+        return count
+    else:
+        logger.error(f"Error counting recently added items in library {library_id}: {response.status_code} {response.text}")
+        return 0
+
 # Function to list media libraries and count items in each
 def list_and_count_media_libraries(user_id):
     url = f"{BASE_URL}/Users/{user_id}/Items"
@@ -68,16 +101,20 @@ def list_and_count_media_libraries(user_id):
     if response.status_code == 200:
         libraries = response.json().get('Items', [])
         library_counts = {}
+        recent_counts = {}
         for library in libraries:
             library_name = library['Name']
             if library_name not in ['Playlists', 'Collections']:  # Skip these libraries
                 library_id = library['Id']
                 count = count_items_in_library(user_id, library_id)
+                recent_count = count_recently_added_items(user_id, library_id)
                 library_counts[library_name] = count
-        return library_counts
+                if recent_count > 0:
+                    recent_counts[library_name] = recent_count
+        return library_counts, recent_counts
     else:
         logger.error(f"Error listing libraries: {response.status_code} {response.text}")
-        return {}
+        return {}, {}
 
 # Function to check if the server is active
 def check_server_status():
@@ -133,22 +170,37 @@ async def update_discord_message():
                 server_active = check_server_status()
                 user_id = get_first_user_id()
 
-                if server_active:
-                    status = "🟢 **Server Status:** Online"
-                else:
-                    status = "🔴 **Server Status:** Offline"
+                # Determine the server status
+                status = "🟢 **Server Status:** Online" if server_active else "🔴 **Server Status:** Offline"
+                color = discord.Color.green() if server_active else discord.Color.red()
+                
+                # Initialize embed
+                embed = discord.Embed(
+                    title="Jellyfin Server Status",
+                    description=status,
+                    color=color
+                )
+                embed.set_footer(text=f"Last updated at {discord.utils.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+                embed.set_thumbnail(url="https://example.com/your-thumbnail.png")  # Optional thumbnail image
+                embed.set_author(name="Jellyfin Status Bot", icon_url="https://example.com/your-bot-icon.png")  # Optional author image
 
                 if user_id:
-                    library_counts = list_and_count_media_libraries(user_id)
-                    description = '\n'.join([f"**{lib}:** {count}" for lib, count in library_counts.items()])
-                else:
-                    description = 'No users found or error retrieving user ID.'
+                    library_counts, recent_counts = list_and_count_media_libraries(user_id)
 
-                embed = discord.Embed(
-                    title="Jellyfin Server Status & Media Library Counts",
-                    description=status + '\n\n' + description,
-                    color=discord.Color.green() if server_active else discord.Color.red()
-                )
+                    # Library count section
+                    embed.add_field(name="**📊 Library Counts**", value="Here are the total counts of media items in each library:", inline=False)
+                    for lib, count in library_counts.items():
+                        embed.add_field(name=f"**{lib}**", value=f"{count} items", inline=True)
+
+                    # Recently added section
+                    if recent_counts:
+                        recent_description = '\n'.join([f"**{lib}:** {count} items" for lib, count in recent_counts.items()])
+                        embed.add_field(name="**🆕 Recently Added (Past 24 Hours)**", value=recent_description, inline=False)
+                    else:
+                        embed.add_field(name="**🆕 Recently Added (Past 24 Hours)**", value="No items added in the past 24 hours.", inline=False)
+
+                else:
+                    embed.add_field(name="**❌ Error**", value='No users found or error retrieving user ID.', inline=False)
 
                 if previous_message_id:
                     try:
