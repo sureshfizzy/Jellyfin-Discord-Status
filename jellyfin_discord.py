@@ -62,21 +62,12 @@ SLEEP_DURATION = int(os.getenv('SLEEP_DURATION'))
 THUMBNAIL_URL = os.getenv('THUMBNAIL_URL')
 AUTHOR_ICON_URL = os.getenv('AUTHOR_ICON_URL')
 CHANNEL_TYPE = os.getenv('CHANNEL_TYPE').lower()
+USER_ID = os.getenv('USER_ID')
 
-# Function to get all users and extract the first user's ID
-def get_first_user_id():
-    url = f"{BASE_URL}/Users"
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        users = response.json()
-        if users:
-            return users[0]['Id']  # Returning the first user's ID
-        else:
-            logger.warning("No users found.")
-            return None
-    else:
-        logger.error(f"Error getting users: {response.status_code} {response.text}")
-        return None
+# Ensure USER_ID is set
+if not USER_ID:
+    logger.error("USER_ID is not set in the .env file.")
+    raise ValueError("USER_ID is required but not set in the .env file.")
 
 # Function to count media items in a library
 def count_items_in_library(user_id, library_id):
@@ -84,8 +75,8 @@ def count_items_in_library(user_id, library_id):
     params = {
         'Recursive': 'true',
         'ParentId': library_id,
-        'IncludeItemTypes': 'Movie,Series,Episode',  # Include episodes in the count
-        'Fields': 'Id,Type',  # Need IDs and Type to count
+        'IncludeItemTypes': 'Movie,Series,Episode,MusicVideo',
+        'Fields': 'Id,Type',
     }
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 200:
@@ -93,10 +84,11 @@ def count_items_in_library(user_id, library_id):
         movie_count = sum(1 for item in items if item['Type'] == 'Movie')
         series_count = sum(1 for item in items if item['Type'] == 'Series')
         episode_count = sum(1 for item in items if item['Type'] == 'Episode')
-        return movie_count, series_count, episode_count
+        music_video_count = sum(1 for item in items if item['Type'] == 'MusicVideo')  # Count music videos
+        return movie_count, series_count, episode_count, music_video_count
     else:
         logger.error(f"Error counting items in library {library_id}: {response.status_code} {response.text}")
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
 # Function to count media items added in the past 24 hours
 def count_recently_added_items(user_id, library_id):
@@ -106,7 +98,7 @@ def count_recently_added_items(user_id, library_id):
     params = {
         'Recursive': 'true',
         'ParentId': library_id,
-        'IncludeItemTypes': 'Movie,Series',  # Only count movies and series
+        'IncludeItemTypes': 'Movie,Series,MusicVideo',  # Include music videos
         'Fields': 'Id,DateCreated',  # Need IDs and DateCreated to filter
     }
     response = requests.get(url, headers=headers, params=params)
@@ -144,28 +136,33 @@ def list_and_count_media_libraries(user_id):
         recent_counts = {}
         for library in libraries:
             library_name = library['Name']
-            if library_name not in ['Playlists', 'Collections']:  # Skip these libraries
+
+            if library_name not in ['Playlists', 'Collections', 'Recommendations']:
                 library_id = library['Id']
-                movie_count, series_count, episode_count = count_items_in_library(user_id, library_id)
+                movie_count, series_count, episode_count, music_video_count = count_items_in_library(user_id, library_id)
                 recent_count = count_recently_added_items(user_id, library_id)
-                
+
                 # Determine if the library is for movies or shows
                 if 'Movies' in library_name:
                     # Movies library: only count movies
                     library_counts[library_name] = f"{movie_count} Movies"
+                elif 'Music Videos' in library_name:
+                    # Music Videos library: count music videos
+                    library_counts[library_name] = f"{music_video_count} Music Videos"
                 else:
                     # Shows library: count shows and episodes
                     if episode_count > 0:
                         library_counts[library_name] = f"{series_count} Shows / {episode_count} Episodes"
                     else:
                         library_counts[library_name] = f"{series_count} Shows"
-                
+
                 if recent_count > 0:
                     recent_counts[library_name] = recent_count
         return library_counts, recent_counts
     else:
         logger.error(f"Error listing libraries: {response.status_code} {response.text}")
         return {}, {}
+
 
 # Function to check if the server is active
 def check_server_status():
@@ -260,8 +257,9 @@ async def update_discord_message():
         channel = await get_or_create_category_and_channel(guild)
         while True:
             try:
-                user_id = get_first_user_id()
-                
+                # Use USER_ID directly
+                user_id = USER_ID
+
                 # Initialize embed
                 embed = discord.Embed(
                     title="JellyCine Media Library Overview",
