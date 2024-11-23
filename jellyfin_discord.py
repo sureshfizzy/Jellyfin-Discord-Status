@@ -137,24 +137,26 @@ def list_and_count_media_libraries(user_id):
         for library in libraries:
             library_name = library['Name']
 
-            if library_name not in ['Playlists', 'Collections', 'Recommendations']:
+            if library_name not in ['Playlists', 'Collections', 'Recommendations', 'Recordings']:
                 library_id = library['Id']
                 movie_count, series_count, episode_count, music_video_count = count_items_in_library(user_id, library_id)
                 recent_count = count_recently_added_items(user_id, library_id)
 
-                # Determine if the library is for movies or shows
-                if 'Movies' in library_name:
+                if library.get('CollectionType') == 'movies' or 'Movies' in library_name:
                     # Movies library: only count movies
                     library_counts[library_name] = f"{movie_count} Movies"
-                elif 'Music Videos' in library_name:
-                    # Music Videos library: count music videos
-                    library_counts[library_name] = f"{music_video_count} Music Videos"
-                else:
+                elif library.get('CollectionType') == 'tvshows' or 'Shows' in library_name:
                     # Shows library: count shows and episodes
                     if episode_count > 0:
                         library_counts[library_name] = f"{series_count} Shows / {episode_count} Episodes"
                     else:
                         library_counts[library_name] = f"{series_count} Shows"
+                elif library.get('CollectionType') == 'musicvideos' or 'Music Videos' in library_name:
+                    # Music Videos library: count music videos
+                    library_counts[library_name] = f"{music_video_count} Music Videos"
+                else:
+                    # Default fallback: unknown type
+                    library_counts[library_name] = f"{movie_count} Movies / {series_count} Shows / {music_video_count} Music Videos"
 
                 if recent_count > 0:
                     recent_counts[library_name] = recent_count
@@ -162,7 +164,6 @@ def list_and_count_media_libraries(user_id):
     else:
         logger.error(f"Error listing libraries: {response.status_code} {response.text}")
         return {}, {}
-
 
 # Function to check if the server is active
 def check_server_status():
